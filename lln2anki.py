@@ -1,5 +1,7 @@
 #! /usr/bin/env python3
 
+# ©2021 Jason Lunz <znull@github.com>
+
 import json
 import sys
 import re
@@ -96,14 +98,14 @@ class Note:
 
         return '\t'.join(data)
 
-    def export(self):
+    def export(self, outfh):
         bytes_written = 0
         for name, data in self.files:
             with open(path.join(Note.MEDIA_DIR, name), 'wb') as fh:
                 fh.write(data)
             bytes_written += len(data)
 
-        print(self.tsv())
+        print(self.tsv(), file=outfh)
 
         return len(self.files), bytes_written
 
@@ -152,7 +154,7 @@ if __name__ == '__main__':
 
     files = bytes_written = 0
     for i, note in enumerate(notes.values()):
-        f, b = note.export()
+        f, b = note.export(sys.stdout)
         files += f
         bytes_written += b
 
