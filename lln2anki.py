@@ -3,6 +3,7 @@
 import json
 import sys
 import re
+from argparse import ArgumentParser, FileType
 from base64 import b64decode
 from itertools import chain
 from os import path
@@ -22,7 +23,102 @@ ext = {
     'image/jpeg': '.jpeg',
 }
 
-def media(ref, data, suffix=''):
+def find_media_dir():
+    md = path.expanduser('~/.local/share/Anki2/User 1/collection.media')
+    assert path.isdir(md)
+    return md
+
+class Note:
+
+    MEDIA_DIR = find_media_dir()
+    MAX_WORDS = 0
+
+    def __init__(self, word):
+        context = word['context']
+        phrase = context['phrase']
+        ref = phrase['reference']
+        subtok = phrase['subtitleTokens']
+        word_text = word['word']['text']
+
+        self.key = '{}:{}'.format(ref['movieId'], ref['subtitleIndex'])
+
+        for st in chain(*subtok.values()):
+            if st['form']['text'] == word_text:
+                part_of_speech = parts_of_speech[st['pos']]
+                break
+        else:
+            raise ValueError('{} not found in forms'.format(word_text))
+
+        拼音 = ' '.join(word['word']['pinyin'])
+        意思 = '; '.join(word['wordTranslationsArr'])
+
+        self.words = [ (word_text, 拼音, 意思, part_of_speech) ]
+
+        forms = list(map(lambda st: st['form'], subtok['1']))
+        sentence = ''.join(map(lambda f: f['text'], forms))
+        sentence = re.sub('\s+', ' ', sentence)
+        self.sentence = sentence
+        self.sentence_拼音 = ' '.join(chain(*map(lambda f: f.get('pinyin') or '', forms)))
+        self.sentence_意思 = re.sub('\s+', ' ', phrase['hTranslations']['1'])
+
+        self.files = [
+            media(phrase['audio'], ref),
+            media(phrase['thumb_prev'], ref, '_prev'),
+            media(phrase['thumb_next'], ref, '_next'),
+        ]
+        self.audio = '[sound:{}]'.format(self.files[0][0])
+        self.image1 = '<img src="{}"/>'.format(self.files[1][0])
+        self.image2 = '<img src="{}"/>'.format(self.files[2][0])
+
+    def merge(self, other):
+        assert self.key == other.key
+        assert self.sentence == other.sentence
+        assert self.sentence_拼音 == other.sentence_拼音
+        assert self.sentence_意思 == other.sentence_意思
+        self.words.extend(other.words)
+        Note.MAX_WORDS = max(Note.MAX_WORDS, len(self.words))
+
+    def tsv(self):
+        data = [
+            self.key,
+            self.sentence,
+            self.sentence_拼音,
+            self.sentence_意思,
+            self.audio,
+            self.image1,
+            self.image2,
+        ]
+        for word in self.words:
+            data.extend(word)
+
+        # pad every line to the same number of fields
+        data += [''] * 4 * (Note.MAX_WORDS - len(self.words))
+
+        return '\t'.join(data)
+
+    def export(self):
+        for name, data in self.files:
+            with open(path.join(Note.MEDIA_DIR, name), 'wb') as fh:
+                fh.write(data)
+
+        print(self.tsv())
+
+    def fields(self):
+        return chain(enumerate(self.words), [
+            ('key', self.key),
+            ('sentence', self.sentence),
+            ('sentence_pinyin', self.sentence_拼音),
+            ('sentence_meaning', self.sentence_意思),
+            ('audio', self.audio),
+            ('image1', self.image1),
+            ('image2', self.image2),
+        ])
+
+    def dump(self, fh):
+        print('\n'.join(map(str, self.fields())) + '\n', file=fh)
+
+def media(data, ref, suffix=''):
+    data = data['dataURL']
     tag, bits = data.split(',', 1)
     assert tag.startswith('data:')
     tag = tag[5:].split(';', 1)[0]
@@ -33,65 +129,29 @@ def media(ref, data, suffix=''):
 
     return name, bits
 
-def tsv(card):
-    return '\t'.join(v for k, v in sorted(card.items()))
+if __name__ == '__main__':
+    parser = ArgumentParser()
+    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('lln_json', metavar='lln.json', type=FileType('r'),
+        help='Language Learning for Netflix json export file')
+    Args = parser.parse_args()
 
-def word_to_card(word):
-    text = word['word']['text']
-    context = word['context']
-    phrase = context['phrase']
-    ref = phrase['reference']
-    subtok = phrase['subtitleTokens']
+    lln_data  = json.load(Args.lln_json)
 
-    forms = list(map(lambda st: st['form'], subtok['1']))
-    pinyin = ' '.join(chain(*map(lambda f: f.get('pinyin') or '', forms)))
-    sentence = ''.join(map(lambda f: f['text'], forms))
-    sentence = re.sub('\s+', ' ', sentence)
-    meaning = re.sub('\s+', ' ', phrase['hTranslations']['1'])
+    notes = {}
+    for word in lln_data:
+        note = Note(word)
+        if note.key in notes:
+            notes[note.key].merge(note)
+        else:
+            notes[note.key] = note
 
-    mp3name, audio = media(ref, phrase['audio']['dataURL'])
-    imgp_name, img_prev = media(ref, phrase['thumb_prev']['dataURL'], '_prev')
-    imgn_name, img_next = media(ref, phrase['thumb_next']['dataURL'], '_next')
+    for i, note in enumerate(notes.values()):
+        note.export()
 
-    card = {
-        'a.key': '{}:{}:{}'.format(ref['movieId'], ref['subtitleIndex'], context['wordIndex']),
-        'b.simplified': text,
-        'c.pinyin.1': ' '.join(word['word']['pinyin']),
-        'd.meaning': '; '.join(word['wordTranslationsArr']),
-        'e.sentence': sentence,
-        'f.sentence.pinyin': pinyin,
-        'g.sentence.meaning': meaning,
-        'h.audio': '[sound:{}]'.format(mp3name),
-        'i.image.1': '<img src="{}"/>'.format(imgp_name),
-        'j.image.2': '<img src="{}"/>'.format(imgn_name),
-        'k.pos': '',
-    }
-    for st in chain(*subtok.values()):
-        if st['form']['text'] == text:
-            card['k.pos'] = parts_of_speech[st['pos']]
-            break
+        if Args.verbose:
+            print(i+1, file=sys.stderr)
+            note.dump(sys.stderr)
 
-    files = {
-        mp3name: audio,
-        imgp_name: img_prev,
-        imgn_name: img_next,
-    }
-    return card, files.items()
-
-def dump_files(files):
-    media_dir = path.expanduser('~/.local/share/Anki2/User 1/collection.media')
-    assert path.isdir(media_dir)
-    for name, data in files:
-        with open(path.join(media_dir, name), 'wb') as fh:
-            fh.write(data)
-            print('wrote {}'.format(name), file=sys.stderr)
-
-export = json.load(sys.stdin)
-for i, word in enumerate(export):
-    #print(i, file=sys.stderr)
-    card, files = word_to_card(word)
-    print(tsv(card))
-    dump_files(files)
-
-    #print('\n'.join(map(str, sorted(card.items()))))
-    #print()
+    word_count = sum(len(n.words) for n in notes.values())
+    print('exported {} notes with {} cards'.format(len(notes), word_count), file=sys.stderr)
