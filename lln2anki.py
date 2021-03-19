@@ -97,11 +97,15 @@ class Note:
         return '\t'.join(data)
 
     def export(self):
+        bytes_written = 0
         for name, data in self.files:
             with open(path.join(Note.MEDIA_DIR, name), 'wb') as fh:
                 fh.write(data)
+            bytes_written += len(data)
 
         print(self.tsv())
+
+        return len(self.files), bytes_written
 
     def fields(self):
         return chain(enumerate(self.words), [
@@ -146,8 +150,11 @@ if __name__ == '__main__':
         else:
             notes[note.key] = note
 
+    files = bytes_written = 0
     for i, note in enumerate(notes.values()):
-        note.export()
+        f, b = note.export()
+        files += f
+        bytes_written += b
 
         if Args.verbose:
             print(i+1, file=sys.stderr)
@@ -155,3 +162,4 @@ if __name__ == '__main__':
 
     word_count = sum(len(n.words) for n in notes.values())
     print('exported {} notes with {} cards'.format(len(notes), word_count), file=sys.stderr)
+    print('wrote {} bytes of media to {} files'.format(bytes_written, files), file=sys.stderr)
